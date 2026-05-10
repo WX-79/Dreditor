@@ -6,8 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <cstring>
 #include <functional>
+#include <cstring>
 
 // Plattform-unabhängiger Font-Pfad
 #ifdef _WIN32
@@ -19,13 +19,6 @@
 #else
     const char* FONT_PATH = nullptr;
 #endif
-
-// UTF-8 Sonderzeichen Mapping
-struct SpecialChar {
-    const char* utf8;
-    int raylibKey;
-    bool needsShift;
-};
 
 // Struktur für gezeichnete Punkte/Kreise
 struct DrawingPoint {
@@ -99,9 +92,6 @@ private:
     int newScreenWidth, newScreenHeight;
     bool fullscreen;
     
-    // Sonderzeichen Unterstützung
-    bool altGrPressed;
-    
 public:
     TextEditor(int width, int height) : screenWidth(width), screenHeight(height) {
         lines.push_back({""});
@@ -120,7 +110,6 @@ public:
         darkMode = false;
         isResizing = false;
         fullscreen = false;
-        altGrPressed = false;
         
         fontSize = 28;
         lineHeight = fontSize + 12;
@@ -129,10 +118,10 @@ public:
         textAreaStartY = 30;
         scrollBarWidth = 15;
         
-        // Tasten-Wiederholung (schnell)
+        // Tasten-Wiederholung
         lastKeyTime = 0;
-        keyRepeatDelay = 0.2;   // 200ms Verzögerung
-        keyRepeatInterval = 0.02;  // 20ms Intervall (50x pro Sekunde)
+        keyRepeatDelay = 0.15;
+        keyRepeatInterval = 0.015;
         lastKeyPressed = -1;
         keyRepeatActive = false;
         
@@ -161,13 +150,13 @@ public:
         // Render Target für Shader-Effekt
         target = LoadRenderTexture(screenWidth, screenHeight);
         
-        // System-Font laden (mit UTF-8 Unterstützung)
+        // System-Font laden
         font = GetFontDefault();
         if (FONT_PATH) {
             Font loadedFont = LoadFontEx(FONT_PATH, fontSize, 0, 250);
             if (loadedFont.texture.id != 0) {
                 font = loadedFont;
-                std::cout << "Loaded system font with UTF-8 support" << std::endl;
+                std::cout << "Loaded system font" << std::endl;
             } else {
                 std::cout << "Using default font" << std::endl;
             }
@@ -188,18 +177,15 @@ public:
     }
     
     void UpdateWindow() {
-        // Fenster-Resize mit Maus
         Vector2 mousePos = GetMousePosition();
         Rectangle resizeGrip = {float(screenWidth - 20), float(screenHeight - 20), 20, 20};
         
-        // Prüfe ob Maus über Resize-Grip ist
         if (CheckCollisionPointRec(mousePos, resizeGrip)) {
             SetMouseCursor(MOUSE_CURSOR_RESIZE_NWSE);
         } else {
             SetMouseCursor(MOUSE_CURSOR_DEFAULT);
         }
         
-        // Resize starten
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mousePos, resizeGrip)) {
             isResizing = true;
             resizeStart = mousePos;
@@ -207,7 +193,6 @@ public:
             newScreenHeight = screenHeight;
         }
         
-        // Resize durchführen
         if (isResizing && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             int deltaX = mousePos.x - resizeStart.x;
             int deltaY = mousePos.y - resizeStart.y;
@@ -218,7 +203,6 @@ public:
             screenHeight = newScreenHeight;
             SetWindowSize(screenWidth, screenHeight);
             
-            // Render Texture neu erstellen für neue Größe
             UnloadRenderTexture(target);
             target = LoadRenderTexture(screenWidth, screenHeight);
             
@@ -229,7 +213,6 @@ public:
             isResizing = false;
         }
         
-        // Fullscreen toggle mit F11
         if (IsKeyPressed(KEY_F11)) {
             fullscreen = !fullscreen;
             ToggleFullscreen();
@@ -242,7 +225,6 @@ public:
                 SetWindowSize(screenWidth, screenHeight);
             }
             
-            // Render Texture neu erstellen für neue Größe
             UnloadRenderTexture(target);
             target = LoadRenderTexture(screenWidth, screenHeight);
             
@@ -340,45 +322,33 @@ public:
         }
     }
     
+    // Korrekte Messung eines einzelnen Zeichens MIT Zeichenabstand
+    float GetCharWidth(char c) {
+        return MeasureTextEx(font, std::string(1, c).c_str(), fontSize, charSpacing).x;
+    }
+    
+    // Korrekte Messung eines gesamten Textes MIT Zeichenabstand
     float MeasureTextWidth(const std::string& text) {
         float width = 0;
-        // Für UTF-8 Zeichen müssen wir jedes Zeichen korrekt messen
-        for (size_t i = 0; i < text.length(); ) {
-            // UTF-8 Zeichenlänge bestimmen
-            int charLen = 1;
-            if ((text[i] & 0xF8) == 0xF0) charLen = 4;
-            else if ((text[i] & 0xF0) == 0xE0) charLen = 3;
-            else if ((text[i] & 0xE0) == 0xC0) charLen = 2;
-            
-            std::string utf8Char = text.substr(i, charLen);
-            width += MeasureTextEx(font, utf8Char.c_str(), fontSize, charSpacing).x;
-            i += charLen;
+        for (char c : text) {
+            width += GetCharWidth(c);
         }
         return width;
     }
     
-    float GetCharWidth(const std::string& utf8Char) {
-        return MeasureTextEx(font, utf8Char.c_str(), fontSize, charSpacing).x;
-    }
-    
+    // Exakte Cursor-Position - Jedes Zeichen einzeln berechnen
     int GetCursorX(int line, int pos) {
         if (line >= lines.size()) return textAreaStartX;
         if (pos < 0) pos = 0;
+        if (pos > (int)lines[line].content.length()) pos = lines[line].content.length();
         
-        std::string text = lines[line].content;
-        // Position in Bytes umwandeln (UTF-8 safe)
-        int bytePos = 0;
-        int charCount = 0;
-        while (bytePos < text.length() && charCount < pos) {
-            if ((text[bytePos] & 0xF8) == 0xF0) bytePos += 4;
-            else if ((text[bytePos] & 0xF0) == 0xE0) bytePos += 3;
-            else if ((text[bytePos] & 0xE0) == 0xC0) bytePos += 2;
-            else bytePos += 1;
-            charCount++;
+        const std::string& text = lines[line].content;
+        float width = 0;
+        // Jedes Zeichen bis zur Cursor-Position einzeln messen
+        for (int i = 0; i < pos; i++) {
+            width += GetCharWidth(text[i]);
         }
-        
-        std::string textBeforeCursor = text.substr(0, bytePos);
-        return textAreaStartX + (int)MeasureTextWidth(textBeforeCursor);
+        return textAreaStartX + (int)width;
     }
     
     int FindPosAtX(int line, int mouseX) {
@@ -386,113 +356,16 @@ public:
         
         const std::string& text = lines[line].content;
         float currentWidth = 0;
-        int charCount = 0;
-        size_t bytePos = 0;
         
-        while (bytePos < text.length()) {
-            // Prüfe ob Maus vor diesem Zeichen ist
+        for (int i = 0; i <= (int)text.length(); i++) {
             if (mouseX < textAreaStartX + currentWidth) {
-                return charCount;
+                return i;
             }
-            
-            // UTF-8 Zeichenlänge
-            int charLen = 1;
-            if ((text[bytePos] & 0xF8) == 0xF0) charLen = 4;
-            else if ((text[bytePos] & 0xF0) == 0xE0) charLen = 3;
-            else if ((text[bytePos] & 0xE0) == 0xC0) charLen = 2;
-            
-            std::string utf8Char = text.substr(bytePos, charLen);
-            currentWidth += GetCharWidth(utf8Char);
-            bytePos += charLen;
-            charCount++;
-        }
-        
-        return charCount;
-    }
-    
-    // Sonderzeichen Eingabe
-    void HandleSpecialChars() {
-        // AltGr Erkennung (Rechts Alt)
-        altGrPressed = IsKeyDown(KEY_RIGHT_ALT);
-        
-        // Deutsches Tastaturlayout Sonderzeichen
-        if (altGrPressed) {
-            // AltGr + Q = @
-            if (IsKeyPressed(KEY_Q)) InsertChar("@");
-            // AltGr + E = €
-            else if (IsKeyPressed(KEY_E)) InsertChar("€");
-            // AltGr + 2 = ²
-            else if (IsKeyPressed(KEY_TWO)) InsertChar("²");
-            // AltGr + 3 = ³
-            else if (IsKeyPressed(KEY_THREE)) InsertChar("³");
-            // AltGr + 7 = {
-            else if (IsKeyPressed(KEY_SEVEN)) InsertChar("{");
-            // AltGr + 8 = [
-            else if (IsKeyPressed(KEY_EIGHT)) InsertChar("[");
-            // AltGr + 9 = ]
-            else if (IsKeyPressed(KEY_NINE)) InsertChar("]");
-            // AltGr + 0 = }
-            else if (IsKeyPressed(KEY_ZERO)) InsertChar("}");
-            // AltGr + - = \
-            else if (IsKeyPressed(KEY_MINUS)) InsertChar("\\");
-            // AltGr + < = |
-            else if (IsKeyPressed(KEY_COMMA)) InsertChar("|");
-        } else {
-            // Normale Sonderzeichen mit Shift
-            if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) {
-                if (IsKeyPressed(KEY_SEMICOLON)) InsertChar(":");
-                else if (IsKeyPressed(KEY_PERIOD)) InsertChar(";");
-                else if (IsKeyPressed(KEY_COMMA)) InsertChar("<");
-                else if (IsKeyPressed(KEY_SLASH)) InsertChar("?");
-                else if (IsKeyPressed(KEY_GRAVE)) InsertChar("~");
-                else if (IsKeyPressed(KEY_ONE)) InsertChar("!");
-                else if (IsKeyPressed(KEY_TWO)) InsertChar("\"");
-                else if (IsKeyPressed(KEY_THREE)) InsertChar("§");
-                else if (IsKeyPressed(KEY_FOUR)) InsertChar("$");
-                else if (IsKeyPressed(KEY_FIVE)) InsertChar("%");
-                else if (IsKeyPressed(KEY_SIX)) InsertChar("&");
-                else if (IsKeyPressed(KEY_SEVEN)) InsertChar("/");
-                else if (IsKeyPressed(KEY_EIGHT)) InsertChar("(");
-                else if (IsKeyPressed(KEY_NINE)) InsertChar(")");
-                else if (IsKeyPressed(KEY_ZERO)) InsertChar("=");
-                else if (IsKeyPressed(KEY_MINUS)) InsertChar("_");
-                else if (IsKeyPressed(KEY_EQUAL)) InsertChar("+");
-                else if (IsKeyPressed(KEY_LEFT_BRACKET)) InsertChar("{");
-                else if (IsKeyPressed(KEY_RIGHT_BRACKET)) InsertChar("}");
-                else if (IsKeyPressed(KEY_BACKSLASH)) InsertChar("|");
-            } else {
-                // Umlaute und ß (kein Shift)
-                if (IsKeyPressed(KEY_APOSTROPHE)) InsertChar("ä");
-                else if (IsKeyPressed(KEY_LEFT_BRACKET)) InsertChar("ü");
-                else if (IsKeyPressed(KEY_RIGHT_BRACKET)) InsertChar("ö");
-                else if (IsKeyPressed(KEY_MINUS)) InsertChar("ß");
-                else if (IsKeyPressed(KEY_SEMICOLON)) InsertChar("ö");
-                else if (IsKeyPressed(KEY_PERIOD)) InsertChar(".");
-                else if (IsKeyPressed(KEY_COMMA)) InsertChar(",");
-                else if (IsKeyPressed(KEY_SLASH)) InsertChar("-");
-                else if (IsKeyPressed(KEY_GRAVE)) InsertChar("^");
-                else if (IsKeyPressed(KEY_ONE)) InsertChar("1");
-                else if (IsKeyPressed(KEY_TWO)) InsertChar("2");
-                else if (IsKeyPressed(KEY_THREE)) InsertChar("3");
-                else if (IsKeyPressed(KEY_FOUR)) InsertChar("4");
-                else if (IsKeyPressed(KEY_FIVE)) InsertChar("5");
-                else if (IsKeyPressed(KEY_SIX)) InsertChar("6");
-                else if (IsKeyPressed(KEY_SEVEN)) InsertChar("7");
-                else if (IsKeyPressed(KEY_EIGHT)) InsertChar("8");
-                else if (IsKeyPressed(KEY_NINE)) InsertChar("9");
-                else if (IsKeyPressed(KEY_ZERO)) InsertChar("0");
-                else if (IsKeyPressed(KEY_EQUAL)) InsertChar("´");
-                else if (IsKeyPressed(KEY_BACKSLASH)) InsertChar("#");
+            if (i < (int)text.length()) {
+                currentWidth += GetCharWidth(text[i]);
             }
         }
-    }
-    
-    void InsertChar(const std::string& utf8Char) {
-        if (hasSelection) DeleteSelection();
-        lines[cursorLine].content.insert(cursorPos, utf8Char);
-        cursorPos++;
-        cursorTimer = 0;
-        cursorVisible = true;
+        return text.length();
     }
     
     // Rechner Implementierung
@@ -504,15 +377,9 @@ public:
     double parseExpression(const std::string& expr, size_t& pos) {
         double result = parseTerm(expr, pos);
         while (pos < expr.length()) {
-            if (expr[pos] == '+') {
-                pos++;
-                result += parseTerm(expr, pos);
-            } else if (expr[pos] == '-') {
-                pos++;
-                result -= parseTerm(expr, pos);
-            } else {
-                break;
-            }
+            if (expr[pos] == '+') { pos++; result += parseTerm(expr, pos); }
+            else if (expr[pos] == '-') { pos++; result -= parseTerm(expr, pos); }
+            else break;
         }
         return result;
     }
@@ -520,16 +387,9 @@ public:
     double parseTerm(const std::string& expr, size_t& pos) {
         double result = parseFactor(expr, pos);
         while (pos < expr.length()) {
-            if (expr[pos] == '*') {
-                pos++;
-                result *= parseFactor(expr, pos);
-            } else if (expr[pos] == '/') {
-                pos++;
-                double divisor = parseFactor(expr, pos);
-                if (divisor != 0) result /= divisor;
-            } else {
-                break;
-            }
+            if (expr[pos] == '*') { pos++; result *= parseFactor(expr, pos); }
+            else if (expr[pos] == '/') { pos++; double d = parseFactor(expr, pos); if (d != 0) result /= d; }
+            else break;
         }
         return result;
     }
@@ -540,136 +400,51 @@ public:
         
         if (pos + 4 <= expr.length() && expr.substr(pos, 4) == "sqrt") {
             pos += 4;
-            if (expr[pos] == '(') {
-                pos++;
-                double arg = parseExpression(expr, pos);
-                if (expr[pos] == ')') pos++;
-                return sqrt(arg);
-            }
+            if (expr[pos] == '(') { pos++; double arg = parseExpression(expr, pos); if (expr[pos] == ')') pos++; return sqrt(arg); }
         }
         else if (pos + 3 <= expr.length() && expr.substr(pos, 3) == "exp") {
             pos += 3;
-            if (expr[pos] == '(') {
-                pos++;
-                double exponent = parseExpression(expr, pos);
-                if (expr[pos] == ',') {
-                    pos++;
-                    double base = parseExpression(expr, pos);
-                    if (expr[pos] == ')') pos++;
-                    return pow(base, exponent);
-                }
-            }
-        }
-        else if (pos + 3 <= expr.length() && expr.substr(pos, 3) == "sin") {
-            pos += 3;
-            if (expr[pos] == '(') {
-                pos++;
-                double arg = parseExpression(expr, pos);
-                if (expr[pos] == ')') pos++;
-                return sin(arg);
-            }
-        }
-        else if (pos + 3 <= expr.length() && expr.substr(pos, 3) == "cos") {
-            pos += 3;
-            if (expr[pos] == '(') {
-                pos++;
-                double arg = parseExpression(expr, pos);
-                if (expr[pos] == ')') pos++;
-                return cos(arg);
-            }
-        }
-        else if (pos + 3 <= expr.length() && expr.substr(pos, 3) == "tan") {
-            pos += 3;
-            if (expr[pos] == '(') {
-                pos++;
-                double arg = parseExpression(expr, pos);
-                if (expr[pos] == ')') pos++;
-                return tan(arg);
-            }
-        }
-        else if (pos + 3 <= expr.length() && expr.substr(pos, 3) == "log") {
-            pos += 3;
-            if (expr[pos] == '(') {
-                pos++;
-                double arg = parseExpression(expr, pos);
-                if (expr[pos] == ')') pos++;
-                return log10(arg);
-            }
-        }
-        else if (pos + 2 <= expr.length() && expr.substr(pos, 2) == "ln") {
-            pos += 2;
-            if (expr[pos] == '(') {
-                pos++;
-                double arg = parseExpression(expr, pos);
-                if (expr[pos] == ')') pos++;
-                return log(arg);
-            }
+            if (expr[pos] == '(') { pos++; double exp = parseExpression(expr, pos); if (expr[pos] == ',') { pos++; double base = parseExpression(expr, pos); if (expr[pos] == ')') pos++; return pow(base, exp); } }
         }
         
-        if (expr[pos] == '(') {
-            pos++;
-            double result = parseExpression(expr, pos);
-            if (expr[pos] == ')') pos++;
-            return result;
-        }
+        if (expr[pos] == '(') { pos++; double result = parseExpression(expr, pos); if (expr[pos] == ')') pos++; return result; }
         
         std::string numStr;
-        while (pos < expr.length() && (isdigit(expr[pos]) || expr[pos] == '.')) {
-            numStr += expr[pos];
-            pos++;
-        }
+        while (pos < expr.length() && (isdigit(expr[pos]) || expr[pos] == '.')) { numStr += expr[pos]; pos++; }
         
-        if (!numStr.empty()) {
-            return std::stod(numStr);
-        }
-        
+        if (!numStr.empty()) return std::stod(numStr);
         return 0;
     }
     
     void ProcessCalculations() {
-        for (int i = 0; i < lines.size(); i++) {
-            std::string& line = lines[i].content;
-            size_t startPos = 0;
-            std::string newLine = "";
+        for (auto& line : lines) {
+            std::string& l = line.content;
+            std::string newLine;
             size_t lastPos = 0;
+            size_t pos = 0;
             
-            while (true) {
-                size_t openBracket = line.find('[', startPos);
-                if (openBracket == std::string::npos) {
-                    newLine += line.substr(lastPos);
-                    break;
-                }
+            while ((pos = l.find('[', pos)) != std::string::npos) {
+                size_t end = l.find(']', pos + 1);
+                if (end == std::string::npos) break;
                 
-                size_t closeBracket = line.find(']', openBracket + 1);
-                if (closeBracket == std::string::npos) {
-                    newLine += line.substr(lastPos);
-                    break;
-                }
-                
-                newLine += line.substr(lastPos, openBracket - lastPos);
-                std::string expression = line.substr(openBracket + 1, closeBracket - openBracket - 1);
+                newLine += l.substr(lastPos, pos - lastPos);
+                std::string expr = l.substr(pos + 1, end - pos - 1);
                 
                 try {
-                    double result = evaluateExpression(expression);
-                    std::string resultStr;
-                    if (std::abs(result - std::round(result)) < 0.0001) {
-                        resultStr = std::to_string((int)std::round(result));
-                    } else {
-                        resultStr = std::to_string(result);
-                        resultStr.erase(resultStr.find_last_not_of('0') + 1, std::string::npos);
-                        if (resultStr.back() == '.') resultStr.pop_back();
-                    }
-                    newLine += "[" + expression + "=" + resultStr + "]";
-                } catch (...) {
-                    newLine += "[" + expression + "=ERROR]";
-                }
+                    double result = evaluateExpression(expr);
+                    std::string resStr = std::to_string(result);
+                    resStr.erase(resStr.find_last_not_of('0') + 1, std::string::npos);
+                    if (resStr.back() == '.') resStr.pop_back();
+                    newLine += "[" + expr + "=" + resStr + "]";
+                } catch (...) { newLine += "[" + expr + "=ERROR]"; }
                 
-                startPos = closeBracket + 1;
-                lastPos = startPos;
+                lastPos = end + 1;
+                pos = end + 1;
             }
-            line = newLine;
+            newLine += l.substr(lastPos);
+            l = newLine;
         }
-        std::cout << "Calculations processed!" << std::endl;
+        std::cout << "Calculations done!" << std::endl;
     }
     
     void AddDrawingPoint(Vector2 pos, float thickness, Color color) {
@@ -685,14 +460,12 @@ public:
             }
         }
         
-        if (lineIndex == -1) {
-            lineIndex = cursorLine;
-            offsetY = pos.y - (textAreaStartY + (cursorLine - scrollOffset) * lineHeight);
+        if (lineIndex == -1) { 
+            lineIndex = cursorLine; 
+            offsetY = pos.y - (textAreaStartY + (cursorLine - scrollOffset) * lineHeight); 
         }
-        
-        if (lineIndex >= 0 && lineIndex < lines.size()) {
-            DrawingPoint newPoint = {pos, thickness, color, lineIndex, offsetY};
-            lines[lineIndex].drawings.push_back(newPoint);
+        if (lineIndex >= 0 && lineIndex < lines.size()) { 
+            lines[lineIndex].drawings.push_back({pos, thickness, color, lineIndex, offsetY}); 
         }
     }
     
@@ -700,9 +473,11 @@ public:
         float eraserSize = ERASER_SIZE;
         for (auto& line : lines) {
             line.drawings.erase(std::remove_if(line.drawings.begin(), line.drawings.end(),
-                [pos, eraserSize](const DrawingPoint& point) {
-                    float dist = sqrt(pow(pos.x - point.position.x, 2) + pow(pos.y - point.position.y, 2));
-                    return dist < eraserSize;
+                [pos, eraserSize](const DrawingPoint& p) { 
+                    float dx = pos.x - p.position.x;
+                    float dy = pos.y - p.position.y;
+                    float dist = sqrt(dx*dx + dy*dy);
+                    return dist < eraserSize; 
                 }), line.drawings.end());
         }
     }
@@ -710,26 +485,22 @@ public:
     void SaveFile(const std::string& filename) {
         std::ofstream file(filename, std::ios::binary);
         if (file.is_open()) {
-            bool themeMode = darkMode;
-            file.write((char*)&themeMode, sizeof(bool));
-            int lineCount = lines.size();
-            file.write((char*)&lineCount, sizeof(int));
+            file.write((char*)&darkMode, sizeof(bool));
+            int count = lines.size(); file.write((char*)&count, sizeof(int));
             for (const auto& line : lines) {
-                int textLength = line.content.length();
-                file.write((char*)&textLength, sizeof(int));
-                file.write(line.content.c_str(), textLength);
-                int drawingCount = line.drawings.size();
-                file.write((char*)&drawingCount, sizeof(int));
-                for (const auto& drawing : line.drawings) {
-                    file.write((char*)&drawing.position, sizeof(Vector2));
-                    file.write((char*)&drawing.thickness, sizeof(float));
-                    file.write((char*)&drawing.color, sizeof(Color));
-                    file.write((char*)&drawing.relativeLine, sizeof(int));
-                    file.write((char*)&drawing.offsetY, sizeof(float));
+                int len = line.content.length(); file.write((char*)&len, sizeof(int));
+                file.write(line.content.c_str(), len);
+                int dc = line.drawings.size(); file.write((char*)&dc, sizeof(int));
+                for (const auto& d : line.drawings) {
+                    file.write((char*)&d.position, sizeof(Vector2));
+                    file.write((char*)&d.thickness, sizeof(float));
+                    file.write((char*)&d.color, sizeof(Color));
+                    file.write((char*)&d.relativeLine, sizeof(int));
+                    file.write((char*)&d.offsetY, sizeof(float));
                 }
             }
             file.close();
-            std::cout << "File saved: " << filename << std::endl;
+            std::cout << "Saved: " << filename << std::endl;
         }
     }
     
@@ -737,235 +508,122 @@ public:
         std::ifstream file(filename, std::ios::binary);
         if (file.is_open()) {
             lines.clear();
-            bool savedTheme;
-            file.read((char*)&savedTheme, sizeof(bool));
-            darkMode = savedTheme;
-            int lineCount;
-            file.read((char*)&lineCount, sizeof(int));
-            for (int i = 0; i < lineCount; i++) {
+            file.read((char*)&darkMode, sizeof(bool));
+            int count; file.read((char*)&count, sizeof(int));
+            for (int i = 0; i < count; i++) {
                 TextLine line;
-                int textLength;
-                file.read((char*)&textLength, sizeof(int));
-                line.content.resize(textLength);
-                file.read(&line.content[0], textLength);
-                int drawingCount;
-                file.read((char*)&drawingCount, sizeof(int));
-                for (int j = 0; j < drawingCount; j++) {
-                    DrawingPoint drawing;
-                    file.read((char*)&drawing.position, sizeof(Vector2));
-                    file.read((char*)&drawing.thickness, sizeof(float));
-                    file.read((char*)&drawing.color, sizeof(Color));
-                    file.read((char*)&drawing.relativeLine, sizeof(int));
-                    file.read((char*)&drawing.offsetY, sizeof(float));
-                    line.drawings.push_back(drawing);
+                int len; file.read((char*)&len, sizeof(int));
+                line.content.resize(len);
+                file.read(&line.content[0], len);
+                int dc; file.read((char*)&dc, sizeof(int));
+                for (int j = 0; j < dc; j++) {
+                    DrawingPoint d;
+                    file.read((char*)&d.position, sizeof(Vector2));
+                    file.read((char*)&d.thickness, sizeof(float));
+                    file.read((char*)&d.color, sizeof(Color));
+                    file.read((char*)&d.relativeLine, sizeof(int));
+                    file.read((char*)&d.offsetY, sizeof(float));
+                    line.drawings.push_back(d);
                 }
                 lines.push_back(line);
             }
             file.close();
-            std::cout << "File loaded: " << filename << std::endl;
-            cursorLine = cursorPos = 0;
-            scrollOffset = 0;
-            hasSelection = false;
+            std::cout << "Loaded: " << filename << std::endl;
+            cursorLine = cursorPos = 0; scrollOffset = 0; hasSelection = false;
         }
     }
     
     void HandleBackspace() {
-        if (hasSelection) {
-            DeleteSelection();
-        } else if (cursorPos > 0) {
-            // UTF-8 sicher löschen
-            std::string& line = lines[cursorLine].content;
-            int bytePos = 0;
-            int charCount = 0;
-            while (bytePos < line.length() && charCount < cursorPos - 1) {
-                if ((line[bytePos] & 0xF8) == 0xF0) bytePos += 4;
-                else if ((line[bytePos] & 0xF0) == 0xE0) bytePos += 3;
-                else if ((line[bytePos] & 0xE0) == 0xC0) bytePos += 2;
-                else bytePos += 1;
-                charCount++;
-            }
-            
-            int nextBytePos = bytePos;
-            if (nextBytePos < line.length()) {
-                if ((line[nextBytePos] & 0xF8) == 0xF0) nextBytePos += 4;
-                else if ((line[nextBytePos] & 0xF0) == 0xE0) nextBytePos += 3;
-                else if ((line[nextBytePos] & 0xE0) == 0xC0) nextBytePos += 2;
-                else nextBytePos += 1;
-            }
-            
-            line.erase(bytePos, nextBytePos - bytePos);
+        if (hasSelection) { DeleteSelection(); return; }
+        if (cursorPos > 0) {
+            lines[cursorLine].content.erase(cursorPos - 1, 1);
             cursorPos--;
         } else if (cursorLine > 0) {
             cursorPos = lines[cursorLine - 1].content.length();
             lines[cursorLine - 1].content += lines[cursorLine].content;
-            for (auto& drawing : lines[cursorLine].drawings) {
-                lines[cursorLine - 1].drawings.push_back(drawing);
-            }
+            for (auto& d : lines[cursorLine].drawings) lines[cursorLine - 1].drawings.push_back(d);
             lines.erase(lines.begin() + cursorLine);
             cursorLine--;
         }
-        cursorTimer = 0;
-        cursorVisible = true;
+        cursorTimer = 0; cursorVisible = true;
     }
     
     void HandleDelete() {
-        if (hasSelection) {
-            DeleteSelection();
-        } else if (cursorPos < GetCharCount(lines[cursorLine].content)) {
-            // UTF-8 sicher löschen
-            std::string& line = lines[cursorLine].content;
-            int bytePos = 0;
-            int charCount = 0;
-            while (bytePos < line.length() && charCount < cursorPos) {
-                if ((line[bytePos] & 0xF8) == 0xF0) bytePos += 4;
-                else if ((line[bytePos] & 0xF0) == 0xE0) bytePos += 3;
-                else if ((line[bytePos] & 0xE0) == 0xC0) bytePos += 2;
-                else bytePos += 1;
-                charCount++;
-            }
-            
-            int nextBytePos = bytePos;
-            if (nextBytePos < line.length()) {
-                if ((line[nextBytePos] & 0xF8) == 0xF0) nextBytePos += 4;
-                else if ((line[nextBytePos] & 0xF0) == 0xE0) nextBytePos += 3;
-                else if ((line[nextBytePos] & 0xE0) == 0xC0) nextBytePos += 2;
-                else nextBytePos += 1;
-            }
-            
-            line.erase(bytePos, nextBytePos - bytePos);
+        if (hasSelection) { DeleteSelection(); return; }
+        if (cursorPos < (int)lines[cursorLine].content.length()) {
+            lines[cursorLine].content.erase(cursorPos, 1);
         } else if (cursorLine + 1 < lines.size()) {
             lines[cursorLine].content += lines[cursorLine + 1].content;
-            for (auto& drawing : lines[cursorLine + 1].drawings) {
-                lines[cursorLine].drawings.push_back(drawing);
-            }
+            for (auto& d : lines[cursorLine + 1].drawings) lines[cursorLine].drawings.push_back(d);
             lines.erase(lines.begin() + cursorLine + 1);
         }
-        cursorTimer = 0;
-        cursorVisible = true;
-    }
-    
-    int GetCharCount(const std::string& text) {
-        int count = 0;
-        for (size_t i = 0; i < text.length(); ) {
-            if ((text[i] & 0xF8) == 0xF0) i += 4;
-            else if ((text[i] & 0xF0) == 0xE0) i += 3;
-            else if ((text[i] & 0xE0) == 0xC0) i += 2;
-            else i += 1;
-            count++;
-        }
-        return count;
-    }
-    
-    void HandleLeftArrow() {
-        if (cursorPos > 0) {
-            cursorPos--;
-        } else if (cursorLine > 0) {
-            cursorLine--;
-            cursorPos = GetCharCount(lines[cursorLine].content);
-        }
-        cursorTimer = 0;
-        cursorVisible = true;
-    }
-    
-    void HandleRightArrow() {
-        if (cursorPos < GetCharCount(lines[cursorLine].content)) {
-            cursorPos++;
-        } else if (cursorLine + 1 < lines.size()) {
-            cursorLine++;
-            cursorPos = 0;
-        }
-        cursorTimer = 0;
-        cursorVisible = true;
+        cursorTimer = 0; cursorVisible = true;
     }
     
     void DrawContent() {
         // Zeichnungen
         for (int i = 0; i < lines.size(); i++) {
-            int lineY = textAreaStartY + (i - scrollOffset) * lineHeight;
-            if (lineY + lineHeight < textAreaStartY || lineY > screenHeight) continue;
-            for (const auto& drawing : lines[i].drawings) {
-                float yPos = lineY + drawing.offsetY;
-                DrawCircleV({drawing.position.x, yPos}, drawing.thickness / 2, drawing.color);
+            int y = textAreaStartY + (i - scrollOffset) * lineHeight;
+            if (y + lineHeight < textAreaStartY || y > screenHeight) continue;
+            for (const auto& d : lines[i].drawings) {
+                DrawCircleV({d.position.x, y + d.offsetY}, d.thickness / 2, d.color);
             }
         }
         
         // Text
         for (int i = 0; i < visibleLines && (scrollOffset + i) < lines.size(); i++) {
-            int lineNumber = scrollOffset + i;
-            int yPos = textAreaStartY + i * lineHeight;
+            int line = scrollOffset + i;
+            int y = textAreaStartY + i * lineHeight;
+            DrawText(TextFormat("%d", line + 1), 10, y, fontSize - 8, LIGHTGRAY);
             
-            // Zeilennummer
-            DrawText(TextFormat("%d", lineNumber + 1), 
-                    10, yPos, fontSize - 8, LIGHTGRAY);
+            const std::string& txt = lines[line].content;
+            float x = textAreaStartX;
             
-            const std::string& text = lines[lineNumber].content;
-            float currentX = textAreaStartX;
-            int charIndex = 0;
-            size_t bytePos = 0;
-            
-            while (bytePos < text.length()) {
-                // UTF-8 Zeichenlänge
-                int charLen = 1;
-                if ((text[bytePos] & 0xF8) == 0xF0) charLen = 4;
-                else if ((text[bytePos] & 0xF0) == 0xE0) charLen = 3;
-                else if ((text[bytePos] & 0xE0) == 0xC0) charLen = 2;
+            // Jedes Zeichen einzeln zeichnen
+            for (int j = 0; j < (int)txt.length(); j++) {
+                char c = txt[j];
+                float w = GetCharWidth(c);
+                bool sel = hasSelection && line >= selectionStartLine && line <= selectionEndLine &&
+                    j >= (line == selectionStartLine ? selectionStartPos : 0) &&
+                    j < (line == selectionEndLine ? selectionEndPos : (int)txt.length());
                 
-                std::string utf8Char = text.substr(bytePos, charLen);
-                float charWidth = GetCharWidth(utf8Char);
-                
-                // Prüfe Selektion
-                bool isSelected = hasSelection && 
-                    lineNumber >= selectionStartLine && lineNumber <= selectionEndLine &&
-                    charIndex >= (lineNumber == selectionStartLine ? selectionStartPos : 0) &&
-                    charIndex < (lineNumber == selectionEndLine ? selectionEndPos : GetCharCount(text));
-                
-                if (isSelected) {
-                    DrawRectangle(currentX, yPos - 2, charWidth, lineHeight, ColorAlpha(BLUE, 0.5f));
-                    DrawTextEx(font, utf8Char.c_str(), {currentX, float(yPos)}, fontSize, charSpacing, WHITE);
+                if (sel) { 
+                    DrawRectangle(x, y - 2, w, lineHeight, ColorAlpha(BLUE, 0.5f)); 
+                    DrawTextEx(font, std::string(1, c).c_str(), {x, float(y)}, fontSize, charSpacing, WHITE); 
                 } else {
-                    DrawTextEx(font, utf8Char.c_str(), {currentX, float(yPos)}, fontSize, charSpacing, BLACK);
+                    DrawTextEx(font, std::string(1, c).c_str(), {x, float(y)}, fontSize, charSpacing, BLACK); 
                 }
-                currentX += charWidth;
-                bytePos += charLen;
-                charIndex++;
+                x += w;
             }
             
-            // Cursor
-            if (cursorLine == lineNumber && cursorVisible && !hasSelection) {
-                int cursorX = GetCursorX(lineNumber, cursorPos);
-                DrawRectangle(cursorX, yPos, 2, fontSize, BLACK);
+            // Cursor - EXAKTE Position
+            if (cursorLine == line && cursorVisible && !hasSelection) {
+                int cursorX = GetCursorX(line, cursorPos);
+                DrawRectangle(cursorX, y, 2, fontSize, BLACK);
             }
         }
         
-        // Radierer Cursor
+        // UI Elemente
         if (isErasing) {
-            Vector2 mousePos = GetMousePosition();
-            DrawCircleV(mousePos, ERASER_SIZE, ColorAlpha(RED, 0.3f));
-            DrawCircleLines(mousePos.x, mousePos.y, ERASER_SIZE, RED);
-            DrawText("ERASING", mousePos.x - 30, mousePos.y - 25, 15, RED);
+            Vector2 mp = GetMousePosition();
+            DrawCircleV(mp, ERASER_SIZE, ColorAlpha(RED, 0.3f));
+            DrawCircleLines(mp.x, mp.y, ERASER_SIZE, RED);
+            DrawText("ERASING", mp.x - 30, mp.y - 25, 15, RED);
         }
-        
-        // Pinselvorschau
         if (isDrawing) {
-            Vector2 mousePos = GetMousePosition();
-            DrawCircleV(mousePos, currentThickness / 2, ColorAlpha(BLACK, 0.5f));
-            DrawText(TextFormat("Brush Size: %.0f", currentThickness), 10, screenHeight - 85, 15, BLACK);
+            Vector2 mp = GetMousePosition();
+            DrawCircleV(mp, currentThickness / 2, ColorAlpha(BLACK, 0.5f));
+            DrawText(TextFormat("Brush: %.0f", currentThickness), 10, screenHeight - 85, 15, BLACK);
         }
         
         // Scrollbar
-        Rectangle scrollBarRect = {
-            (float)(screenWidth - scrollBarWidth - 10),
-            (float)(textAreaStartY),
-            (float)scrollBarWidth,
-            (float)(visibleLines * lineHeight)
-        };
-        DrawRectangleRec(scrollBarRect, LIGHTGRAY);
-        
+        Rectangle sb = {float(screenWidth - scrollBarWidth - 10), float(textAreaStartY), float(scrollBarWidth), float(visibleLines * lineHeight)};
+        DrawRectangleRec(sb, LIGHTGRAY);
         int maxScroll = std::max(0, (int)lines.size() - visibleLines);
         if (maxScroll > 0) {
-            float scrollBarHeight = scrollBarRect.height * ((float)visibleLines / lines.size());
-            float scrollBarY = scrollBarRect.y + scrollPos * (scrollBarRect.height - scrollBarHeight);
-            DrawRectangle(screenWidth - scrollBarWidth - 10, scrollBarY, scrollBarWidth, scrollBarHeight, DARKGRAY);
+            float h = sb.height * ((float)visibleLines / lines.size());
+            float y = sb.y + scrollPos * (sb.height - h);
+            DrawRectangle(screenWidth - scrollBarWidth - 10, y, scrollBarWidth, h, DARKGRAY);
         }
         
         // Resize Grip
@@ -976,424 +634,329 @@ public:
             GRAY
         );
         
-        // Hilfe (jetzt mit Sonderzeichen-Hinweis)
-        DrawText("Ctrl+S: Save | Ctrl+O: Load | Ctrl+T: Theme | Ctrl+R: Calculate | F11: Fullscreen", 10, screenHeight - 85, 15, BLACK);
-        DrawText("Ctrl+C: Copy | Ctrl+X: Cut | Ctrl+V: Paste | Ctrl+D: Clear Drawings", 10, screenHeight - 70, 15, BLACK);
-        DrawText("Right Click: Draw | Middle Click: Erase | Mouse Wheel: Brush Size | Resize: Drag corner", 10, screenHeight - 55, 15, BLACK);
-        DrawText("German Umlauts: ä ö ü ß | AltGr+2=² AltGr+3=³ AltGr+E=€ | Math: [2+2] becomes [2+2=4]", 10, screenHeight - 25, 15, BLACK);
-
+        // Hilfe
+        DrawText("Ctrl+S: Save | Ctrl+O: Load | Ctrl+T: Theme | Ctrl+R: Calculate | F11: Fullscreen", 10, screenHeight - 70, 15, BLACK);
+        DrawText("Ctrl+C: Copy | Ctrl+X: Cut | Ctrl+V: Paste | Ctrl+D: Clear Drawings", 10, screenHeight - 55, 15, BLACK);
+        DrawText("Right Click: Draw | Middle Click: Erase | Mouse Wheel: Brush Size", 10, screenHeight - 40, 15, BLACK);
+        DrawText("Hold Backspace/Delete for repeat | Arrow keys + Shift for selection", 10, screenHeight - 25, 15, BLACK);
+        DrawText("Math: [2+2] becomes [2+2=4] | sqrt(9) | exp(2,3) = 2^3", 10, screenHeight - 10, 15, BLACK);
+    }
+    
+    std::string GetSelectedText() {
+        if (!hasSelection) return "";
+        std::string sel;
+        for (int l = selectionStartLine; l <= selectionEndLine; l++) {
+            const std::string& txt = lines[l].content;
+            int start = (l == selectionStartLine) ? selectionStartPos : 0;
+            int end = (l == selectionEndLine) ? selectionEndPos : txt.length();
+            sel += txt.substr(start, end - start);
+            if (l < selectionEndLine) sel += "\n";
+        }
+        return sel;
+    }
+    
+    void DeleteSelection() {
+        if (!hasSelection) return;
+        
+        std::string before = lines[selectionStartLine].content.substr(0, selectionStartPos);
+        std::string after = lines[selectionEndLine].content.substr(selectionEndPos);
+        lines[selectionStartLine].content = before + after;
+        
+        for (int l = selectionEndLine; l > selectionStartLine; l--) {
+            for (auto& d : lines[l].drawings) lines[selectionStartLine].drawings.push_back(d);
+            lines.erase(lines.begin() + l);
+        }
+        cursorLine = selectionStartLine;
+        cursorPos = selectionStartPos;
+        hasSelection = false;
     }
     
     void Update() {
-        if (fileDialogActive) {
-            return;
-        }
+        if (fileDialogActive) return;
         
         UpdateWindow();
         
-        // Theme umschalten mit Shader (Ctrl+T)
-        if (IsKeyPressed(KEY_T) && IsKeyDown(KEY_LEFT_CONTROL)) {
-            darkMode = !darkMode;
-            std::cout << "Dark Mode: " << (darkMode ? "ON" : "OFF") << " (Shader Invert)" << std::endl;
+        // Shortcuts
+        if (IsKeyPressed(KEY_T) && IsKeyDown(KEY_LEFT_CONTROL)) { 
+            darkMode = !darkMode; 
+            std::cout << (darkMode ? "Dark Mode ON" : "Light Mode ON") << std::endl; 
+        }
+        if (IsKeyPressed(KEY_R) && IsKeyDown(KEY_LEFT_CONTROL)) ProcessCalculations();
+        if (IsKeyPressed(KEY_S) && IsKeyDown(KEY_LEFT_CONTROL)) ShowFileDialog(true);
+        if (IsKeyPressed(KEY_O) && IsKeyDown(KEY_LEFT_CONTROL)) ShowFileDialog(false);
+        if (IsKeyPressed(KEY_D) && IsKeyDown(KEY_LEFT_CONTROL)) { 
+            for (auto& l : lines) l.drawings.clear(); 
+            std::cout << "Drawings cleared" << std::endl; 
         }
         
-        // Berechnungen Ctrl+R
-        if (IsKeyPressed(KEY_R) && IsKeyDown(KEY_LEFT_CONTROL)) {
-            ProcessCalculations();
-        }
-        
-        // Copy/Cut/Paste (Ctrl+C, Ctrl+X, Ctrl+V)
+        // Copy/Paste
         if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
-            if (IsKeyPressed(KEY_C)) {
-                clipboard = GetSelectedText();
-                std::cout << "Copied to clipboard" << std::endl;
+            if (IsKeyPressed(KEY_C)) { 
+                clipboard = GetSelectedText(); 
+                std::cout << "Copied" << std::endl; 
             }
-            if (IsKeyPressed(KEY_X)) {
-                clipboard = GetSelectedText();
-                DeleteSelection();
-                std::cout << "Cut to clipboard" << std::endl;
+            if (IsKeyPressed(KEY_X)) { 
+                clipboard = GetSelectedText(); 
+                DeleteSelection(); 
+                std::cout << "Cut" << std::endl; 
             }
             if (IsKeyPressed(KEY_V)) {
                 if (hasSelection) DeleteSelection();
                 for (char c : clipboard) {
                     if (c == '\n') {
-                        std::string remaining = lines[cursorLine].content.substr(cursorPos);
+                        std::string rest = lines[cursorLine].content.substr(cursorPos);
                         lines[cursorLine].content = lines[cursorLine].content.substr(0, cursorPos);
-                        TextLine newLine;
-                        newLine.content = remaining;
-                        lines.insert(lines.begin() + cursorLine + 1, newLine);
-                        cursorLine++;
-                        cursorPos = 0;
-                    } else {
-                        lines[cursorLine].content.insert(cursorPos, 1, c);
-                        cursorPos++;
+                        lines.insert(lines.begin() + cursorLine + 1, {rest});
+                        cursorLine++; cursorPos = 0;
+                    } else { 
+                        lines[cursorLine].content.insert(cursorPos, 1, c); 
+                        cursorPos++; 
                     }
                 }
-                std::cout << "Pasted from clipboard" << std::endl;
+                std::cout << "Pasted" << std::endl;
             }
-        }
-        
-        // Speichern/Laden mit Dialog
-        if (IsKeyPressed(KEY_S) && IsKeyDown(KEY_LEFT_CONTROL)) {
-            ShowFileDialog(true);
-        }
-        if (IsKeyPressed(KEY_O) && IsKeyDown(KEY_LEFT_CONTROL)) {
-            ShowFileDialog(false);
-        }
-        
-        // Alle Zeichnungen löschen Ctrl+D
-        if (IsKeyPressed(KEY_D) && IsKeyDown(KEY_LEFT_CONTROL)) {
-            for (auto& line : lines) {
-                line.drawings.clear();
-            }
-            std::cout << "All drawings cleared" << std::endl;
         }
         
         UpdateVisibleLines();
-        
-        // Cursor Blinken
         cursorTimer += GetFrameTime();
-        if (cursorTimer >= 0.5) {
-            cursorTimer = 0;
-            cursorVisible = !cursorVisible;
-        }
+        if (cursorTimer >= 0.5) { cursorTimer = 0; cursorVisible = !cursorVisible; }
         
-        Vector2 mousePos = GetMousePosition();
+        Vector2 mp = GetMousePosition();
         
-        // Radieren mit Mittelklick
-        if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
-            if (!isErasing) {
-                isErasing = true;
-                EraseAtPosition(mousePos);
-            } else {
-                EraseAtPosition(mousePos);
-            }
-        } else {
-            isErasing = false;
-        }
+        // Radieren
+        if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) { 
+            if (!isErasing) { isErasing = true; EraseAtPosition(mp); } 
+            else EraseAtPosition(mp); 
+        } else isErasing = false;
         
-        // Zeichnen mit Rechtsklick
+        // Zeichnen
         if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !isErasing) {
-            if (!isDrawing) {
-                isDrawing = true;
-                AddDrawingPoint(mousePos, currentThickness, BLACK);
-                lastDrawPos = mousePos;
+            if (!isDrawing) { 
+                isDrawing = true; 
+                AddDrawingPoint(mp, currentThickness, BLACK); 
+                lastDrawPos = mp; 
             } else {
-                AddDrawingPoint(mousePos, currentThickness, BLACK);
-                float distance = sqrt(pow(mousePos.x - lastDrawPos.x, 2) + pow(mousePos.y - lastDrawPos.y, 2));
-                if (distance > currentThickness / 2) {
-                    int steps = (int)(distance / (currentThickness / 2)) + 1;
+                AddDrawingPoint(mp, currentThickness, BLACK);
+                float dist = sqrt(pow(mp.x - lastDrawPos.x, 2) + pow(mp.y - lastDrawPos.y, 2));
+                if (dist > currentThickness / 2) {
+                    int steps = (int)(dist / (currentThickness / 2)) + 1;
                     for (int i = 1; i < steps; i++) {
                         float t = (float)i / steps;
-                        Vector2 interpolatedPos = {
-                            lastDrawPos.x + t * (mousePos.x - lastDrawPos.x),
-                            lastDrawPos.y + t * (mousePos.y - lastDrawPos.y)
-                        };
-                        AddDrawingPoint(interpolatedPos, currentThickness, BLACK);
+                        Vector2 ip = {lastDrawPos.x + t * (mp.x - lastDrawPos.x), lastDrawPos.y + t * (mp.y - lastDrawPos.y)};
+                        AddDrawingPoint(ip, currentThickness, BLACK);
                     }
                 }
-                lastDrawPos = mousePos;
+                lastDrawPos = mp;
             }
-        } else {
-            isDrawing = false;
+        } else isDrawing = false;
+        
+        // Pinselgröße
+        if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) { 
+            int w = GetMouseWheelMove(); 
+            if (w != 0) { 
+                currentThickness += w * 2; 
+                currentThickness = std::max(4.0f, std::min(40.0f, currentThickness)); 
+            } 
         }
         
-        // Pinselgröße mit Mausrad
-        if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-            int wheel = GetMouseWheelMove();
-            if (wheel != 0) {
-                currentThickness += wheel * 2;
-                currentThickness = std::max(4.0f, std::min(40.0f, currentThickness));
-            }
-        }
-        
-        // Sonderzeichen Eingabe
-        HandleSpecialChars();
-        
-        // Normale Zeichen (ASCII)
+        // Normale Zeicheneingabe
         int key = GetCharPressed();
         while (key > 0) {
             if (hasSelection) DeleteSelection();
             if (key >= 32 && key <= 125) {
                 lines[cursorLine].content.insert(cursorPos, 1, (char)key);
                 cursorPos++;
+                cursorTimer = 0; cursorVisible = true;
             }
             key = GetCharPressed();
         }
         
-        // Tastenwiederholung für Backspace
-        if (IsKeyPressed(KEY_BACKSPACE)) {
-            HandleBackspace();
-            lastKeyPressed = KEY_BACKSPACE;
-            lastKeyTime = GetTime();
-            keyRepeatActive = true;
+        // Tastenwiederholung Backspace
+        if (IsKeyPressed(KEY_BACKSPACE)) { 
+            HandleBackspace(); 
+            lastKeyPressed = KEY_BACKSPACE; 
+            lastKeyTime = GetTime(); 
+            keyRepeatActive = true; 
         } else if (keyRepeatActive && IsKeyDown(KEY_BACKSPACE) && lastKeyPressed == KEY_BACKSPACE) {
-            double currentTime = GetTime();
-            if (currentTime - lastKeyTime > keyRepeatDelay) {
-                HandleBackspace();
-                lastKeyTime = currentTime;
+            double now = GetTime();
+            if (now - lastKeyTime > keyRepeatDelay) { 
+                HandleBackspace(); 
+                lastKeyTime = now; 
             }
         }
         
-        // Tastenwiederholung für Delete
-        if (IsKeyPressed(KEY_DELETE)) {
-            HandleDelete();
-            lastKeyPressed = KEY_DELETE;
-            lastKeyTime = GetTime();
-            keyRepeatActive = true;
+        // Tastenwiederholung Delete
+        if (IsKeyPressed(KEY_DELETE)) { 
+            HandleDelete(); 
+            lastKeyPressed = KEY_DELETE; 
+            lastKeyTime = GetTime(); 
+            keyRepeatActive = true; 
         } else if (keyRepeatActive && IsKeyDown(KEY_DELETE) && lastKeyPressed == KEY_DELETE) {
-            double currentTime = GetTime();
-            if (currentTime - lastKeyTime > keyRepeatDelay) {
-                HandleDelete();
-                lastKeyTime = currentTime;
+            double now = GetTime();
+            if (now - lastKeyTime > keyRepeatDelay) { 
+                HandleDelete(); 
+                lastKeyTime = now; 
             }
         }
         
-        // Tastenwiederholung für Pfeiltasten
+        // Pfeiltasten
         if (IsKeyPressed(KEY_LEFT)) {
-            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) {
-                cursorLine = selectionStartLine;
-                cursorPos = selectionStartPos;
-                hasSelection = false;
-            } else {
-                HandleLeftArrow();
+            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) { 
+                cursorLine = selectionStartLine; 
+                cursorPos = selectionStartPos; 
+                hasSelection = false; 
+            } else { 
+                if (cursorPos > 0) cursorPos--; 
+                else if (cursorLine > 0) { 
+                    cursorLine--; 
+                    cursorPos = lines[cursorLine].content.length(); 
+                } 
             }
-            lastKeyPressed = KEY_LEFT;
-            lastKeyTime = GetTime();
+            if (IsKeyDown(KEY_LEFT_SHIFT) && !hasSelection) { 
+                selectionStartLine = selectionEndLine = cursorLine; 
+                selectionStartPos = selectionEndPos = cursorPos; 
+                hasSelection = true; 
+            }
+            lastKeyPressed = KEY_LEFT; 
+            lastKeyTime = GetTime(); 
             keyRepeatActive = true;
-            
-            if (IsKeyDown(KEY_LEFT_SHIFT) && !hasSelection) {
-                selectionStartLine = selectionEndLine = cursorLine;
-                selectionStartPos = selectionEndPos = cursorPos;
-                hasSelection = true;
-            }
+            cursorTimer = 0; cursorVisible = true;
         } else if (keyRepeatActive && IsKeyDown(KEY_LEFT) && lastKeyPressed == KEY_LEFT) {
-            double currentTime = GetTime();
-            if (currentTime - lastKeyTime > keyRepeatDelay) {
-                if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) {
-                    cursorLine = selectionStartLine;
-                    cursorPos = selectionStartPos;
-                    hasSelection = false;
-                } else {
-                    HandleLeftArrow();
+            double now = GetTime();
+            if (now - lastKeyTime > keyRepeatDelay) {
+                if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) { 
+                    cursorLine = selectionStartLine; 
+                    cursorPos = selectionStartPos; 
+                    hasSelection = false; 
+                } else { 
+                    if (cursorPos > 0) cursorPos--; 
+                    else if (cursorLine > 0) { 
+                        cursorLine--; 
+                        cursorPos = lines[cursorLine].content.length(); 
+                    } 
                 }
-                lastKeyTime = currentTime;
+                lastKeyTime = now;
+                cursorTimer = 0; cursorVisible = true;
             }
         }
         
         if (IsKeyPressed(KEY_RIGHT)) {
-            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) {
-                cursorLine = selectionEndLine;
-                cursorPos = selectionEndPos;
-                hasSelection = false;
-            } else {
-                HandleRightArrow();
+            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) { 
+                cursorLine = selectionEndLine; 
+                cursorPos = selectionEndPos; 
+                hasSelection = false; 
+            } else { 
+                if (cursorPos < (int)lines[cursorLine].content.length()) cursorPos++; 
+                else if (cursorLine + 1 < lines.size()) { 
+                    cursorLine++; 
+                    cursorPos = 0; 
+                } 
             }
-            lastKeyPressed = KEY_RIGHT;
-            lastKeyTime = GetTime();
+            if (IsKeyDown(KEY_LEFT_SHIFT) && !hasSelection) { 
+                selectionStartLine = selectionEndLine = cursorLine; 
+                selectionStartPos = selectionEndPos = cursorPos; 
+                hasSelection = true; 
+            }
+            lastKeyPressed = KEY_RIGHT; 
+            lastKeyTime = GetTime(); 
             keyRepeatActive = true;
-            
-            if (IsKeyDown(KEY_LEFT_SHIFT) && !hasSelection) {
-                selectionStartLine = selectionEndLine = cursorLine;
-                selectionStartPos = selectionEndPos = cursorPos;
-                hasSelection = true;
-            }
+            cursorTimer = 0; cursorVisible = true;
         } else if (keyRepeatActive && IsKeyDown(KEY_RIGHT) && lastKeyPressed == KEY_RIGHT) {
-            double currentTime = GetTime();
-            if (currentTime - lastKeyTime > keyRepeatDelay) {
-                if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) {
-                    cursorLine = selectionEndLine;
-                    cursorPos = selectionEndPos;
-                    hasSelection = false;
-                } else {
-                    HandleRightArrow();
+            double now = GetTime();
+            if (now - lastKeyTime > keyRepeatDelay) {
+                if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) { 
+                    cursorLine = selectionEndLine; 
+                    cursorPos = selectionEndPos; 
+                    hasSelection = false; 
+                } else { 
+                    if (cursorPos < (int)lines[cursorLine].content.length()) cursorPos++; 
+                    else if (cursorLine + 1 < lines.size()) { 
+                        cursorLine++; 
+                        cursorPos = 0; 
+                    } 
                 }
-                lastKeyTime = currentTime;
+                lastKeyTime = now;
+                cursorTimer = 0; cursorVisible = true;
             }
         }
         
-        // Reset key repeat wenn keine Taste mehr gedrückt
-        if (!IsKeyDown(KEY_BACKSPACE) && !IsKeyDown(KEY_DELETE) && 
-            !IsKeyDown(KEY_LEFT) && !IsKeyDown(KEY_RIGHT)) {
+        // Reset key repeat
+        if (!IsKeyDown(KEY_BACKSPACE) && !IsKeyDown(KEY_DELETE) && !IsKeyDown(KEY_LEFT) && !IsKeyDown(KEY_RIGHT)) {
             keyRepeatActive = false;
         }
         
         // Enter
         if (IsKeyPressed(KEY_ENTER)) {
             if (hasSelection) DeleteSelection();
-            std::string remaining = lines[cursorLine].content.substr(cursorPos);
+            std::string rest = lines[cursorLine].content.substr(cursorPos);
             lines[cursorLine].content = lines[cursorLine].content.substr(0, cursorPos);
-            TextLine newLine;
-            newLine.content = remaining;
-            lines.insert(lines.begin() + cursorLine + 1, newLine);
-            cursorLine++;
-            cursorPos = 0;
-            cursorTimer = 0;
-            cursorVisible = true;
+            lines.insert(lines.begin() + cursorLine + 1, {rest});
+            cursorLine++; cursorPos = 0;
+            cursorTimer = 0; cursorVisible = true;
         }
         
-        // Up/Down Pfeile
+        // Up/Down
         if (IsKeyPressed(KEY_UP)) {
-            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) {
-                cursorLine = selectionStartLine;
-                cursorPos = selectionStartPos;
-                hasSelection = false;
-            } else if (cursorLine > 0) {
-                cursorLine--;
-                int lineLen = GetCharCount(lines[cursorLine].content);
-                cursorPos = std::min(cursorPos, lineLen);
+            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) { 
+                cursorLine = selectionStartLine; 
+                cursorPos = selectionStartPos; 
+                hasSelection = false; 
+            } else if (cursorLine > 0) { 
+                cursorLine--; 
+                cursorPos = std::min(cursorPos, (int)lines[cursorLine].content.length()); 
             }
-            cursorTimer = 0;
-            cursorVisible = true;
+            cursorTimer = 0; cursorVisible = true;
         }
         
         if (IsKeyPressed(KEY_DOWN)) {
-            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) {
-                cursorLine = selectionEndLine;
-                cursorPos = selectionEndPos;
-                hasSelection = false;
-            } else if (cursorLine + 1 < lines.size()) {
-                cursorLine++;
-                int lineLen = GetCharCount(lines[cursorLine].content);
-                cursorPos = std::min(cursorPos, lineLen);
+            if (hasSelection && !IsKeyDown(KEY_LEFT_SHIFT)) { 
+                cursorLine = selectionEndLine; 
+                cursorPos = selectionEndPos; 
+                hasSelection = false; 
+            } else if (cursorLine + 1 < lines.size()) { 
+                cursorLine++; 
+                cursorPos = std::min(cursorPos, (int)lines[cursorLine].content.length()); 
             }
-            cursorTimer = 0;
-            cursorVisible = true;
+            cursorTimer = 0; cursorVisible = true;
         }
         
-        // Textauswahl mit Maus (UTF-8 safe)
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            if (mousePos.x >= textAreaStartX && mousePos.y >= textAreaStartY) {
-                int relativeY = (int)(mousePos.y - textAreaStartY);
-                int line = relativeY / lineHeight + scrollOffset;
-                if (line >= 0 && line < lines.size()) {
-                    int pos = FindPosAtX(line, mousePos.x);
-                    selectionStartLine = selectionEndLine = line;
-                    selectionStartPos = selectionEndPos = pos;
-                    hasSelection = true;
-                    cursorLine = line;
-                    cursorPos = pos;
+        // Mausauswahl
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && mp.x >= textAreaStartX && mp.y >= textAreaStartY) {
+            int line = (int)(mp.y - textAreaStartY) / lineHeight + scrollOffset;
+            if (line >= 0 && line < lines.size()) {
+                int pos = FindPosAtX(line, mp.x);
+                selectionStartLine = selectionEndLine = line;
+                selectionStartPos = selectionEndPos = pos;
+                hasSelection = true;
+                cursorLine = line; cursorPos = pos;
+            }
+        }
+        
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hasSelection && mp.x >= textAreaStartX && mp.y >= textAreaStartY) {
+            int line = (int)(mp.y - textAreaStartY) / lineHeight + scrollOffset;
+            if (line >= 0 && line < lines.size()) {
+                int pos = FindPosAtX(line, mp.x);
+                selectionEndLine = line; selectionEndPos = pos;
+                cursorLine = line; cursorPos = pos;
+                if (selectionStartLine > selectionEndLine || (selectionStartLine == selectionEndLine && selectionStartPos > selectionEndPos)) {
+                    std::swap(selectionStartLine, selectionEndLine);
+                    std::swap(selectionStartPos, selectionEndPos);
                 }
             }
         }
         
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hasSelection) {
-            if (mousePos.x >= textAreaStartX && mousePos.y >= textAreaStartY) {
-                int relativeY = (int)(mousePos.y - textAreaStartY);
-                int line = relativeY / lineHeight + scrollOffset;
-                if (line >= 0 && line < lines.size()) {
-                    int pos = FindPosAtX(line, mousePos.x);
-                    selectionEndLine = line;
-                    selectionEndPos = pos;
-                    cursorLine = line;
-                    cursorPos = pos;
-                    if (selectionStartLine > selectionEndLine ||
-                        (selectionStartLine == selectionEndLine && selectionStartPos > selectionEndPos)) {
-                        std::swap(selectionStartLine, selectionEndLine);
-                        std::swap(selectionStartPos, selectionEndPos);
-                    }
-                }
-            }
+        // Scrollen
+        int wheel = GetMouseWheelMove();
+        if (wheel != 0 && !isDrawing && !isErasing) {
+            scrollOffset -= wheel * 2;
+            int max = std::max(0, (int)lines.size() - visibleLines);
+            scrollOffset = std::max(0, std::min(max, scrollOffset));
+            if (max > 0) scrollPos = (float)scrollOffset / max;
         }
-        
-        // Scrolling
-        int mouseWheel = GetMouseWheelMove();
-        if (mouseWheel != 0 && !isDrawing && !isErasing) {
-            scrollOffset -= mouseWheel * 2;
-            int maxScroll = std::max(0, (int)lines.size() - visibleLines);
-            scrollOffset = std::max(0, std::min(maxScroll, scrollOffset));
-            if (maxScroll > 0) {
-                scrollPos = (float)scrollOffset / maxScroll;
-            }
-        }
-    }
-    
-    std::string GetSelectedText() {
-        if (!hasSelection) return "";
-        
-        std::string selected;
-        for (int l = selectionStartLine; l <= selectionEndLine; l++) {
-            if (l < lines.size()) {
-                const std::string& line = lines[l].content;
-                int start = (l == selectionStartLine) ? selectionStartPos : 0;
-                int end = (l == selectionEndLine) ? selectionEndPos : GetCharCount(line);
-                
-                // UTF-8 Positionen finden
-                int byteStart = 0;
-                int charCount = 0;
-                while (byteStart < line.length() && charCount < start) {
-                    if ((line[byteStart] & 0xF8) == 0xF0) byteStart += 4;
-                    else if ((line[byteStart] & 0xF0) == 0xE0) byteStart += 3;
-                    else if ((line[byteStart] & 0xE0) == 0xC0) byteStart += 2;
-                    else byteStart += 1;
-                    charCount++;
-                }
-                
-                int byteEnd = byteStart;
-                while (byteEnd < line.length() && charCount < end) {
-                    if ((line[byteEnd] & 0xF8) == 0xF0) byteEnd += 4;
-                    else if ((line[byteEnd] & 0xF0) == 0xE0) byteEnd += 3;
-                    else if ((line[byteEnd] & 0xE0) == 0xC0) byteEnd += 2;
-                    else byteEnd += 1;
-                    charCount++;
-                }
-                
-                selected += line.substr(byteStart, byteEnd - byteStart);
-                if (l < selectionEndLine) selected += "\n";
-            }
-        }
-        return selected;
-    }
-    
-    void DeleteSelection() {
-        if (!hasSelection) return;
-        
-        std::string beforeSelection;
-        std::string afterSelection;
-        
-        // UTF-8 sicher extrahieren
-        const std::string& startLine = lines[selectionStartLine].content;
-        int byteStart = 0;
-        int charCount = 0;
-        while (byteStart < startLine.length() && charCount < selectionStartPos) {
-            if ((startLine[byteStart] & 0xF8) == 0xF0) byteStart += 4;
-            else if ((startLine[byteStart] & 0xF0) == 0xE0) byteStart += 3;
-            else if ((startLine[byteStart] & 0xE0) == 0xC0) byteStart += 2;
-            else byteStart += 1;
-            charCount++;
-        }
-        
-        const std::string& endLine = lines[selectionEndLine].content;
-        int byteEnd = 0;
-        charCount = 0;
-        while (byteEnd < endLine.length() && charCount < selectionEndPos) {
-            if ((endLine[byteEnd] & 0xF8) == 0xF0) byteEnd += 4;
-            else if ((endLine[byteEnd] & 0xF0) == 0xE0) byteEnd += 3;
-            else if ((endLine[byteEnd] & 0xE0) == 0xC0) byteEnd += 2;
-            else byteEnd += 1;
-            charCount++;
-        }
-        
-        beforeSelection = startLine.substr(0, byteStart);
-        afterSelection = endLine.substr(byteEnd);
-        
-        lines[selectionStartLine].content = beforeSelection + afterSelection;
-        
-        for (int l = selectionEndLine; l > selectionStartLine; l--) {
-            for (auto& drawing : lines[l].drawings) {
-                lines[selectionStartLine].drawings.push_back(drawing);
-            }
-            lines.erase(lines.begin() + l);
-        }
-        
-        cursorLine = selectionStartLine;
-        cursorPos = selectionStartPos;
-        hasSelection = false;
     }
     
     void Draw() {
         if (darkMode) {
-            // Dark Mode: Render zuerst auf Textur, dann mit Shader invertieren
             BeginTextureMode(target);
             ClearBackground(RAYWHITE);
             DrawContent();
@@ -1402,50 +965,26 @@ public:
             BeginDrawing();
             ClearBackground(BLACK);
             BeginShaderMode(invertShader);
-            DrawTextureRec(target.texture, Rectangle{0, 0, (float)screenWidth, (float)-screenHeight}, Vector2{0, 0}, WHITE);
+            DrawTextureRec(target.texture, {0, 0, (float)screenWidth, (float)-screenHeight}, {0, 0}, WHITE);
             EndShaderMode();
-            
-            // Dark Mode Text für Dialog (muss im Dark Mode normal gerendert werden)
-            if (showFileDialog) {
-                HandleFileDialog();
-            }
-            
+            if (showFileDialog) HandleFileDialog();
             EndDrawing();
         } else {
-            // Light Mode: Normal rendern
             BeginDrawing();
             ClearBackground(RAYWHITE);
             DrawContent();
-            
-            // Datei-Dialog im Light Mode
-            if (showFileDialog) {
-                HandleFileDialog();
-            }
-            
+            if (showFileDialog) HandleFileDialog();
             EndDrawing();
         }
-        
-        // Datei-Dialog Flag zurücksetzen
-        if (showFileDialog && !fileDialogActive) {
-            showFileDialog = false;
-        }
+        if (showFileDialog && !fileDialogActive) showFileDialog = false;
     }
 };
 
 int main() {
-    const int screenWidth = 1200;
-    const int screenHeight = 800;
-    
-    InitWindow(screenWidth, screenHeight, "Complete Text Editor with Special Chars");
+    InitWindow(1200, 800, "Text Editor - Fixed Cursor");
     SetTargetFPS(60);
-    
-    TextEditor editor(screenWidth, screenHeight);
-    
-    while (!WindowShouldClose()) {
-        editor.Update();
-        editor.Draw();
-    }
-    
+    TextEditor editor(1200, 800);
+    while (!WindowShouldClose()) { editor.Update(); editor.Draw(); }
     CloseWindow();
     return 0;
 }
